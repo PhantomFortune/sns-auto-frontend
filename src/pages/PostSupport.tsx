@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -47,8 +47,19 @@ import {
   Copy,
   ExternalLink,
   CheckCircle,
+  Bell,
+  CalendarDays,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface ScheduledPost {
   id: string;
@@ -104,6 +115,17 @@ interface XReply {
   replies: number;
   avatar?: string;
   isUnread: boolean;
+}
+
+interface XAutoPostSchedule {
+  id: string;
+  title: string;
+  date: string; // YYYY-MM-DD format
+  startTime: string; // HH:mm format
+  endTime: string; // HH:mm format
+  description?: string;
+  googleCalendarEventId?: string;
+  datetime: Date; // For sorting and comparison
 }
 
 export default function PostSupport() {
@@ -258,9 +280,17 @@ export default function PostSupport() {
     status: "pending" as ScheduledPost["status"],
   });
 
+  // X自動投稿スケジュール関連のstate
+  const [xAutoPostSchedules, setXAutoPostSchedules] = useState<XAutoPostSchedule[]>([]);
+  const [isLoadingSchedules, setIsLoadingSchedules] = useState(false);
+  const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
+
   const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
   const editImageInputRef = useRef<HTMLInputElement | null>(null);
   const autoPostImageInputRef = useRef<HTMLInputElement | null>(null);
+
+  // API Base URL
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
   const deletePost = (id: string) => {
     setPostHistory((prev) => prev.filter((post) => post.id !== id));
@@ -559,13 +589,327 @@ export default function PostSupport() {
     }
   };
 
+  // GoogleカレンダーからX自動投稿スケジュールを取得
+  const fetchXAutoPostSchedules = async () => {
+    setIsLoadingSchedules(true);
+    try {
+      const now = new Date();
+      const timeMin = new Date(now);
+      timeMin.setHours(0, 0, 0, 0);
+      
+      const timeMax = new Date(now);
+      timeMax.setFullYear(now.getFullYear() + 1);
+      timeMax.setHours(23, 59, 59, 999);
+
+      const timeMinStr = timeMin.toISOString();
+      const timeMaxStr = timeMax.toISOString();
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/v1/google-calendar/events?time_min=${encodeURIComponent(timeMinStr)}&time_max=${encodeURIComponent(timeMaxStr)}&max_results=2500`,
+        {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "イベント取得に失敗しました" }));
+        throw new Error(errorData.detail || "イベント取得に失敗しました");
+      }
+
+      const data = await response.json();
+      
+      if (!data.success || !Array.isArray(data.events)) {
+        throw new Error("無効なレスポンス形式");
+      }
+
+      // X自動投稿スケジュールをフィルタリング
+      const xSchedules: XAutoPostSchedule[] = data.events
+        .filter((event: any) => {
+          // タイプがX自動投稿か確認
+          if (event.type === "X自動投稿") {
+            return true;
+          }
+          // 説明欄から判定
+          const description = event.description || "";
+          const descriptionLower = description.toLowerCase();
+          const typeMatch = description.match(/\[種類: (.+?)\]/);
+          if (typeMatch && typeMatch[1] === "X自動投稿") {
+            return true;
+          }
+          if (description.includes("X") && !descriptionLower.includes("youtube")) {
+            return true;
+          }
+          return false;
+        })
+        .map((event: any) => {
+          const startDate = new Date(event.start);
+          const endDate = new Date(event.end);
+          
+          const startYear = startDate.getFullYear();
+          const startMonth = startDate.getMonth();
+          const startDay = startDate.getDate();
+          const date = `${startYear}-${String(startMonth + 1).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+          
+          const startTime = `${startDate.getHours().toString().padStart(2, '0')}:${startDate.getMinutes().toString().padStart(2, '0')}`;
+          const endTime = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
+
+          // 日時をDateオブジェクトに変換（ソート用）
+          const datetime = new Date(`${date}T${startTime}:00`);
+
+          return {
+            id: event.id,
+            title: event.summary || "無題のイベント",
+            date,
+            startTime,
+            endTime,
+            description: event.description || undefined,
+            googleCalendarEventId: event.id,
+            datetime,
+          };
+        })
+        .filter((schedule: XAutoPostSchedule) => {
+          // 未来のスケジュールのみ（現在時刻以降）
+          return schedule.datetime >= now;
+        })
+        .sort((a: XAutoPostSchedule, b: XAutoPostSchedule) => {
+          // 日時順にソート（最も近いものが先頭）
+          return a.datetime.getTime() - b.datetime.getTime();
+        });
+
+      setXAutoPostSchedules(xSchedules);
+      console.log(`X自動投稿スケジュール取得完了: ${xSchedules.length}件`);
+    } catch (error) {
+      console.error("X自動投稿スケジュール取得エラー:", error);
+      toast.error(error instanceof Error ? error.message : "スケジュール取得に失敗しました");
+    } finally {
+      setIsLoadingSchedules(false);
+    }
+  };
+
+  // WebSocket接続でリアルタイム更新
+  useEffect(() => {
+    // 初回取得
+    fetchXAutoPostSchedules();
+    
+    // WebSocket接続を確立
+    if (!API_BASE_URL) {
+      console.warn('API_BASE_URL is not set. WebSocket connection will not be established.');
+      // フォールバック: ポーリングのみ
+      const interval = setInterval(() => {
+        fetchXAutoPostSchedules();
+      }, 5 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+    
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // API_BASE_URLからプロトコルとパスを除去してホストのみを取得
+    const apiUrl = new URL(API_BASE_URL);
+    const wsHost = apiUrl.host;
+    const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
+    
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    
+    const connectWebSocket = () => {
+      try {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+          console.log('WebSocket connected for schedule updates');
+          reconnectAttempts = 0;
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'schedule_update' || data.type === 'connected') {
+              console.log('Schedule update received via WebSocket:', data);
+              // スケジュールを再取得
+              fetchXAutoPostSchedules();
+            }
+          } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+          }
+        };
+        
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+        
+        ws.onclose = () => {
+          console.log('WebSocket disconnected');
+          // 再接続を試みる（最大5回）
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // 指数バックオフ、最大30秒
+            console.log(`Reconnecting WebSocket in ${delay}ms (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
+            reconnectTimeout = setTimeout(() => {
+              connectWebSocket();
+            }, delay);
+          } else {
+            console.warn('Max reconnection attempts reached. Falling back to polling.');
+            // ポーリングにフォールバック（5分ごと）
+            const interval = setInterval(() => {
+              fetchXAutoPostSchedules();
+            }, 5 * 60 * 1000);
+            return () => clearInterval(interval);
+          }
+        };
+      } catch (error) {
+        console.error('Error creating WebSocket connection:', error);
+        // WebSocket接続に失敗した場合、ポーリングにフォールバック
+        const interval = setInterval(() => {
+          fetchXAutoPostSchedules();
+        }, 5 * 60 * 1000);
+        return () => clearInterval(interval);
+      }
+    };
+    
+    connectWebSocket();
+    
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 最も差し迫ったスケジュールを取得
+  const getUpcomingSchedule = (): XAutoPostSchedule | null => {
+    if (xAutoPostSchedules.length === 0) return null;
+    return xAutoPostSchedules[0]; // 既にソート済みなので最初の要素
+  };
+
+  // 今後のX自動投稿数を取得
+  const getUpcomingScheduleCount = (): number => {
+    return xAutoPostSchedules.length;
+  };
+
+  // 日時をフォーマット
+  const formatScheduleDateTime = (schedule: XAutoPostSchedule): string => {
+    const date = new Date(schedule.datetime);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const scheduleDate = new Date(date);
+    scheduleDate.setHours(0, 0, 0, 0);
+    
+    const diffDays = Math.floor((scheduleDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) {
+      return `今日 ${schedule.startTime}`;
+    } else if (diffDays === 1) {
+      return `明日 ${schedule.startTime}`;
+    } else if (diffDays <= 7) {
+      return `${diffDays}日後 ${schedule.startTime}`;
+    } else {
+      return `${schedule.date} ${schedule.startTime}`;
+    }
+  };
+
+  const upcomingSchedule = getUpcomingSchedule();
+  const upcomingCount = getUpcomingScheduleCount();
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">投稿サポート</h1>
-        <p className="text-muted-foreground mt-2">
-          X（旧Twitter）への自動投稿と返信サポートを管理します
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">投稿サポート</h1>
+          <p className="text-muted-foreground mt-2">
+            X（旧Twitter）への自動投稿と返信サポートを管理します
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {/* 通知アイコン（ドロップダウンメニュー） */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" className="relative">
+                <Bell className="h-4 w-4" />
+                {upcomingCount > 0 && (
+                  <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">
+                    {upcomingCount > 99 ? "99+" : upcomingCount}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80">
+              <DropdownMenuLabel className="flex items-center justify-between">
+                <span>X自動投稿スケジュール</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fetchXAutoPostSchedules();
+                  }}
+                  disabled={isLoadingSchedules}
+                  className="h-6 px-2"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isLoadingSchedules ? 'animate-spin' : ''}`} />
+                </Button>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {isLoadingSchedules ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  読み込み中...
+                </div>
+              ) : xAutoPostSchedules.length === 0 ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  今後のX自動投稿スケジュールはありません
+                </div>
+              ) : (
+                <div className="max-h-[400px] overflow-y-auto">
+                  {xAutoPostSchedules.map((schedule) => (
+                    <DropdownMenuItem
+                      key={schedule.id}
+                      className="flex flex-col items-start p-3 cursor-pointer"
+                      onClick={() => setIsScheduleDialogOpen(true)}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <div className="flex items-center gap-2">
+                          {schedule.id === upcomingSchedule?.id && (
+                            <Bell className="h-3 w-3 text-amber-500" />
+                          )}
+                          <span className="font-semibold text-sm">{schedule.title}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <CalendarDays className="h-3 w-3" />
+                        <span>{formatScheduleDateTime(schedule)}</span>
+                      </div>
+                      {schedule.description && (
+                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                          {schedule.description.replace(/\[種類: .+?\]\n?/, "").trim()}
+                        </p>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* スケジュール表示ボタン */}
+          <Button
+            variant="outline"
+            onClick={() => {
+              fetchXAutoPostSchedules();
+              setIsScheduleDialogOpen(true);
+            }}
+            disabled={isLoadingSchedules}
+          >
+            <CalendarDays className="h-4 w-4 mr-2" />
+            {isLoadingSchedules ? "読み込み中..." : "スケジュール表示"}
+          </Button>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
@@ -1677,6 +2021,115 @@ export default function PostSupport() {
             >
               <CheckCircle2 className="h-4 w-4 mr-2" />
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* X自動投稿スケジュール表示ダイアログ */}
+      <Dialog open={isScheduleDialogOpen} onOpenChange={setIsScheduleDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarDays className="h-5 w-5 text-primary" />
+              X自動投稿スケジュール
+            </DialogTitle>
+            <DialogDescription>
+              Googleカレンダーから取得したX自動投稿のスケジュール一覧
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {isLoadingSchedules ? (
+              <div className="flex items-center justify-center py-12">
+                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground mr-2" />
+                <span className="text-muted-foreground">読み込み中...</span>
+              </div>
+            ) : xAutoPostSchedules.length === 0 ? (
+              <div className="text-center py-12">
+                <CalendarDays className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground mb-4">今後のX自動投稿スケジュールはありません</p>
+                <Button
+                  variant="outline"
+                  onClick={fetchXAutoPostSchedules}
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  再読み込み
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-sm font-medium">
+                    合計 {xAutoPostSchedules.length} 件のスケジュール
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={fetchXAutoPostSchedules}
+                    disabled={isLoadingSchedules}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingSchedules ? 'animate-spin' : ''}`} />
+                    更新
+                  </Button>
+                </div>
+                <div className="space-y-3">
+                  {xAutoPostSchedules.map((schedule) => {
+                    const isUpcoming = schedule.id === upcomingSchedule?.id;
+                    return (
+                      <div
+                        key={schedule.id}
+                        className={`p-4 rounded-lg border ${
+                          isUpcoming
+                            ? "border-primary/50 bg-primary/5 dark:bg-primary/10"
+                            : "border-border bg-card"
+                        } hover:bg-accent/30 transition-colors`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2">
+                              {isUpcoming && (
+                                <Bell className="h-4 w-4 text-amber-500 flex-shrink-0" />
+                              )}
+                              <h3 className="font-semibold text-base">{schedule.title}</h3>
+                              {isUpcoming && (
+                                <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/30 dark:text-amber-300">
+                                  最優先
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-4 text-sm text-muted-foreground mb-2">
+                              <div className="flex items-center gap-1.5">
+                                <CalendarDays className="h-4 w-4" />
+                                <span>{schedule.date}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Clock className="h-4 w-4" />
+                                <span>{schedule.startTime} - {schedule.endTime}</span>
+                              </div>
+                              <div className="text-xs">
+                                {formatScheduleDateTime(schedule)}
+                              </div>
+                            </div>
+                            {schedule.description && (
+                              <p className="text-sm text-muted-foreground line-clamp-2">
+                                {schedule.description.replace(/\[種類: .+?\]\n?/, "").trim()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsScheduleDialogOpen(false)}
+            >
+              閉じる
             </Button>
           </DialogFooter>
         </DialogContent>
