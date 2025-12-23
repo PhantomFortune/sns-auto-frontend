@@ -103,40 +103,7 @@ export default function Scheduler() {
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
   const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
 
-  const [schedules, setSchedules] = useState<Schedule[]>([
-    {
-      id: "1",
-      title: "雑談配信",
-      type: "YouTubeライブ配信",
-      date: "2025-12-07",
-      startTime: "20:00",
-      endTime: "22:00",
-    },
-    {
-      id: "2",
-      title: "ゲーム実況",
-      type: "YouTubeライブ配信",
-      date: "2025-12-08",
-      startTime: "21:00",
-      endTime: "23:00",
-    },
-    {
-      id: "3",
-      title: "X自動投稿",
-      type: "X自動投稿",
-      date: "2025-12-07",
-      startTime: "12:00",
-      endTime: "12:30",
-    },
-    {
-      id: "4",
-      title: "1周年記念配信",
-      type: "重要イベント",
-      date: "2026-03-15",
-      startTime: "19:00",
-      endTime: "21:00",
-    },
-  ]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
 
   const [reminders, setReminders] = useState<Reminder[]>([]);
 
@@ -170,53 +137,32 @@ export default function Scheduler() {
   };
 
   // Sync Google Calendar events
-  const syncGoogleCalendarEvents = async (forceFullSync: boolean = false) => {
+  // Strategy: Always sync full range (past 1 year to future 1 year) to ensure complete synchronization
+  const syncGoogleCalendarEvents = async () => {
     if (!isGoogleCalendarConnected) {
       return;
     }
 
     try {
-      // Calculate time range based on current view
-      // For full sync (polling), get a wider range to catch all events
+      setIsSyncing(true);
+      
+      // Calculate full time range: past 1 year to future 1 year
       const now = new Date();
-      let timeMin: Date;
-      let timeMax: Date;
+      const timeMin = new Date(now);
+      timeMin.setFullYear(now.getFullYear() - 1);
+      timeMin.setHours(0, 0, 0, 0);
+      
+      const timeMax = new Date(now);
+      timeMax.setFullYear(now.getFullYear() + 1);
+      timeMax.setHours(23, 59, 59, 999);
 
-      if (forceFullSync) {
-        // For polling, sync a wider range (current week ± 2 weeks) to catch all relevant events
-        const weekDates = getWeekDates();
-        const baseStart = new Date(weekDates[0]);
-        baseStart.setHours(0, 0, 0, 0);
-        const baseEnd = new Date(weekDates[6]);
-        baseEnd.setHours(23, 59, 59, 999);
-        
-        // Extend range by 2 weeks before and after
-        timeMin = new Date(baseStart);
-        timeMin.setDate(timeMin.getDate() - 14);
-        timeMax = new Date(baseEnd);
-        timeMax.setDate(timeMax.getDate() + 14);
-      } else if (activeTab === "week") {
-        // Get current week range
-        const weekDates = getWeekDates();
-        timeMin = new Date(weekDates[0]);
-        timeMin.setHours(0, 0, 0, 0);
-        timeMax = new Date(weekDates[6]);
-        timeMax.setHours(23, 59, 59, 999);
-      } else {
-        // Get current month range
-        const year = currentMonth.getFullYear();
-        const month = currentMonth.getMonth();
-        timeMin = new Date(year, month, 1);
-        timeMax = new Date(year, month + 1, 0, 23, 59, 59, 999);
-      }
-
-      // Format dates for API
+      // Format dates for API (ISO format)
       const timeMinStr = timeMin.toISOString();
       const timeMaxStr = timeMax.toISOString();
 
-      // Fetch events from Google Calendar
+      // Fetch events from Google Calendar (full range: past 1 year to future 1 year)
       const response = await fetch(
-        `${API_BASE_URL}/api/v1/google-calendar/events?time_min=${encodeURIComponent(timeMinStr)}&time_max=${encodeURIComponent(timeMaxStr)}&max_results=250`,
+        `${API_BASE_URL}/api/v1/google-calendar/events?time_min=${encodeURIComponent(timeMinStr)}&time_max=${encodeURIComponent(timeMaxStr)}&max_results=2500`,
         {
           method: "GET",
           headers: {
@@ -226,14 +172,17 @@ export default function Scheduler() {
       );
 
       if (!response.ok) {
-        console.error("Googleカレンダーイベント取得エラー:", response.status);
+        const errorData = await response.json().catch(() => ({ detail: "イベント取得に失敗しました" }));
+        console.error("Googleカレンダーイベント取得エラー:", response.status, errorData);
+        toast.error(`Googleカレンダーからのイベント取得に失敗しました: ${errorData.detail || "エラーが発生しました"}`);
         return;
       }
 
       const data = await response.json();
       
-      if (!data.success || !data.events) {
-        console.error("Googleカレンダーイベント取得エラー:", data);
+      if (!data.success || !Array.isArray(data.events)) {
+        console.error("Googleカレンダーイベント取得エラー: 無効なレスポンス形式", data);
+        toast.error("Googleカレンダーからのイベント取得に失敗しました: 無効なレスポンス形式");
         return;
       }
 
@@ -255,29 +204,36 @@ export default function Scheduler() {
         const endTime = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
         
         
-        // Extract type from event (from description or use colorId as fallback)
+        // Extract type from event description
+        // Rules: Check description for "youtube" (case-insensitive) or "X" (uppercase)
+        // If "youtube" found → YouTubeライブ配信
+        // If "X" (uppercase) found → X自動投稿
+        // Otherwise → 重要イベント
         let type: ScheduleType = "重要イベント";
         
-        // First, try to get type from event.type (extracted from description)
+        // First, try to get type from event.type (if backend already extracted it)
         if (event.type && ["YouTubeライブ配信", "X自動投稿", "重要イベント"].includes(event.type)) {
           type = event.type as ScheduleType;
         } else {
-          // Fallback: determine type from description or title
+          // Determine type from description
           const description = event.description || "";
-          const titleLower = (event.summary || "").toLowerCase();
+          const descriptionLower = description.toLowerCase();
           
-          // Check description for type prefix
+          // Check for [種類: ...] prefix first (if backend added it)
           const typeMatch = description.match(/\[種類: (.+?)\]/);
           if (typeMatch && ["YouTubeライブ配信", "X自動投稿", "重要イベント"].includes(typeMatch[1])) {
             type = typeMatch[1] as ScheduleType;
-          } else if (titleLower.includes("配信") || titleLower.includes("ライブ") || titleLower.includes("stream")) {
+          } else if (descriptionLower.includes("youtube")) {
+            // Check for "youtube" (case-insensitive) in description
             type = "YouTubeライブ配信";
-          } else if (titleLower.includes("投稿") || titleLower.includes("post") || titleLower.includes("tweet")) {
+          } else if (description.includes("X")) {
+            // Check for "X" (uppercase) in description
             type = "X自動投稿";
           }
+          // Otherwise, default to "重要イベント"
         }
         
-        // Clean description (remove type prefix)
+        // Clean description (remove type prefix if exists)
         let cleanDescription = event.description || "";
         cleanDescription = cleanDescription.replace(/\[種類: .+?\]\n?/, "").trim();
 
@@ -294,74 +250,65 @@ export default function Scheduler() {
         };
       });
 
-      // Merge with existing schedules using functional update to get latest state
+      // Merge with existing schedules using functional update
+      // Strategy: 
+      // 1. Keep all local schedules (not from Google Calendar) - these are user-created in the system
+      // 2. Replace all Google Calendar schedules with fresh data from API
+      // 3. Use googleCalendarEventId as the key to identify and update Google Calendar events
       setSchedules(prevSchedules => {
-        // Strategy: Keep all local schedules, update/add Google Calendar schedules for current period
-        // Remove old Google Calendar schedules from the current period only
-        // Use local date components to ensure correct date comparison
-        const periodStartYear = timeMin.getFullYear();
-        const periodStartMonth = timeMin.getMonth();
-        const periodStartDay = timeMin.getDate();
-        const currentPeriodStart = `${periodStartYear}-${String(periodStartMonth + 1).padStart(2, '0')}-${String(periodStartDay).padStart(2, '0')}`;
-        
-        const periodEndYear = timeMax.getFullYear();
-        const periodEndMonth = timeMax.getMonth();
-        const periodEndDay = timeMax.getDate();
-        const currentPeriodEnd = `${periodEndYear}-${String(periodEndMonth + 1).padStart(2, '0')}-${String(periodEndDay).padStart(2, '0')}`;
-        
-        console.log('同期処理開始:', {
-          currentPeriodStart,
-          currentPeriodEnd,
-          prevSchedulesCount: prevSchedules.length,
-          googleCalendarSchedulesCount: googleCalendarSchedules.length
-        });
-        
-        // Keep ALL local schedules (not from Google Calendar) - never remove them
+        // Separate local schedules (user-created in system) and Google Calendar schedules
         const localSchedules = prevSchedules.filter(s => !s.fromGoogleCalendar);
-        console.log('ローカルスケジュール:', localSchedules.length, '件');
         
-        // Remove Google Calendar schedules that are in the current period (will be replaced with fresh data)
-        const otherPeriodGoogleSchedules = prevSchedules.filter(s => {
-          if (!s.fromGoogleCalendar) return false;
-          // Keep Google Calendar schedules outside current period
-          const isOutsidePeriod = s.date < currentPeriodStart || s.date > currentPeriodEnd;
-          return isOutsidePeriod;
+        // Create a map of Google Calendar schedules by event ID for quick lookup
+        const googleCalendarScheduleMap = new Map<string, Schedule>();
+        googleCalendarSchedules.forEach(schedule => {
+          if (schedule.googleCalendarEventId) {
+            googleCalendarScheduleMap.set(schedule.googleCalendarEventId, schedule);
+          }
         });
-        console.log('期間外のGoogleカレンダースケジュール:', otherPeriodGoogleSchedules.length, '件');
         
-        // Combine: local schedules + Google Calendar schedules from other periods + new Google Calendar schedules
-        const mergedSchedules = [...localSchedules, ...otherPeriodGoogleSchedules, ...googleCalendarSchedules];
-        console.log('マージ後のスケジュール:', mergedSchedules.length, '件');
-
-        // Remove duplicates (same googleCalendarEventId or same id) - prefer newer Google Calendar version
+        // Update existing local schedules that have googleCalendarEventId
+        // (these were synced from Google Calendar but may have been edited locally)
+        const updatedLocalSchedules = localSchedules.map(localSchedule => {
+          if (localSchedule.googleCalendarEventId && googleCalendarScheduleMap.has(localSchedule.googleCalendarEventId)) {
+            // This local schedule corresponds to a Google Calendar event
+            // Keep the local version (user may have edited it)
+            return localSchedule;
+          }
+          return localSchedule;
+        });
+        
+        // Combine: local schedules + all Google Calendar schedules
+        const mergedSchedules = [...updatedLocalSchedules, ...googleCalendarSchedules];
+        
+        // Remove duplicates by googleCalendarEventId (prefer local version if exists)
         const uniqueSchedules = mergedSchedules.reduce((acc: Schedule[], current: Schedule) => {
-          // Check for duplicate by googleCalendarEventId (if both have it)
           if (current.googleCalendarEventId) {
+            // Check if we already have this Google Calendar event
             const existingIndex = acc.findIndex(
-              s => s.googleCalendarEventId === current.googleCalendarEventId && s.googleCalendarEventId
+              s => s.googleCalendarEventId === current.googleCalendarEventId
             );
             if (existingIndex !== -1) {
-              // If both have googleCalendarEventId, prefer the newer one (from current sync)
-              if (current.fromGoogleCalendar && acc[existingIndex].fromGoogleCalendar) {
+              // If local version exists, keep it; otherwise use Google Calendar version
+              if (!acc[existingIndex].fromGoogleCalendar && current.fromGoogleCalendar) {
+                // Keep existing local schedule
+                return acc;
+              } else {
+                // Replace with newer Google Calendar version
                 acc[existingIndex] = current;
-              } else if (!acc[existingIndex].fromGoogleCalendar && current.fromGoogleCalendar) {
-                // Keep local version if it exists - NEVER replace local with Google Calendar
-                // Do nothing, keep the existing local schedule
+                return acc;
               }
-              return acc;
             }
           }
           
-          // Check for duplicate by id (for local schedules without googleCalendarEventId)
+          // Check for duplicate by id (for local schedules)
           const existingByIdIndex = acc.findIndex(s => s.id === current.id);
           if (existingByIdIndex !== -1) {
-            // If same id exists, keep the local version (never replace local with Google Calendar)
+            // Same id exists - prefer local version
             if (!acc[existingByIdIndex].fromGoogleCalendar && current.fromGoogleCalendar) {
-              // Keep existing local schedule, don't replace with Google Calendar version
-              return acc;
-            } else if (acc[existingByIdIndex].fromGoogleCalendar && !current.fromGoogleCalendar) {
-              // Replace Google Calendar version with local version
-              acc[existingByIdIndex] = current;
+              return acc; // Keep existing local schedule
+            } else {
+              acc[existingByIdIndex] = current; // Replace with local version
               return acc;
             }
           }
@@ -371,15 +318,18 @@ export default function Scheduler() {
           return acc;
         }, []);
 
-        console.log('最終的なスケジュール:', uniqueSchedules.length, '件');
-        console.log('ローカルスケジュール保持確認:', uniqueSchedules.filter(s => !s.fromGoogleCalendar).length, '件');
+        console.log(`同期完了: ローカル${localSchedules.length}件 + Googleカレンダー${googleCalendarSchedules.length}件 = 合計${uniqueSchedules.length}件`);
         
         return uniqueSchedules;
       });
       
       console.log(`Googleカレンダーから${googleCalendarSchedules.length}件のイベントを同期しました`);
+      toast.success(`Googleカレンダーと同期しました（${googleCalendarSchedules.length}件のイベント）`);
     } catch (error) {
       console.error("Googleカレンダー同期エラー:", error);
+      toast.error("Googleカレンダーとの同期に失敗しました");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -400,31 +350,24 @@ export default function Scheduler() {
     }
   }, []);
 
-  // Sync Google Calendar events when connected or view changes
+  // Sync Google Calendar events when connected
   useEffect(() => {
     if (isGoogleCalendarConnected) {
-      // Use a small delay to ensure state is stable before syncing
-      // This prevents race conditions when rapidly changing weeks
-      const timeoutId = setTimeout(() => {
-        syncGoogleCalendarEvents();
-      }, 200);
-      return () => clearTimeout(timeoutId);
+      // Initial sync when connected
+      syncGoogleCalendarEvents();
     }
-  }, [isGoogleCalendarConnected, currentWeek, currentMonth, activeTab]);
+  }, [isGoogleCalendarConnected]);
 
-  // Real-time sync: Poll Google Calendar for changes every 10 seconds when connected
+  // Real-time sync: Poll Google Calendar for changes every 30 seconds when connected
   useEffect(() => {
     if (!isGoogleCalendarConnected) {
       return;
     }
 
-    // Initial sync with full range
-    syncGoogleCalendarEvents(true);
-
     // Set up polling interval for real-time sync
     const pollInterval = setInterval(() => {
-      syncGoogleCalendarEvents(true); // Use full sync for polling
-    }, 10000); // Poll every 10 seconds
+      syncGoogleCalendarEvents();
+    }, 30000); // Poll every 30 seconds (reduced frequency to avoid rate limits)
 
     return () => clearInterval(pollInterval);
   }, [isGoogleCalendarConnected]);
@@ -533,17 +476,23 @@ export default function Scheduler() {
 
           if (response.ok) {
             const data = await response.json();
-            googleCalendarEventId = data.event?.id || editingSchedule.googleCalendarEventId;
-            toast.success("Googleカレンダーのイベントを更新しました");
+            if (data.success && data.event?.id) {
+              googleCalendarEventId = data.event.id;
+              toast.success("Googleカレンダーのイベントを更新しました");
+            } else {
+              throw new Error("無効なレスポンス形式");
+            }
           } else {
             const errorData = await response.json().catch(() => ({ detail: "更新に失敗しました" }));
-            toast.warning(`Googleカレンダーの更新に失敗: ${errorData.detail || "エラーが発生しました"}`);
-            // Continue with local update even if Google Calendar update fails
-            googleCalendarEventId = editingSchedule.googleCalendarEventId;
+            const errorMessage = typeof errorData.detail === 'string' 
+              ? errorData.detail 
+              : errorData.detail?.message || errorData.message || "更新に失敗しました";
+            throw new Error(errorMessage);
           }
         } catch (error) {
           console.error("Googleカレンダー更新エラー:", error);
-          toast.warning("Googleカレンダーの更新に失敗しましたが、ローカルスケジュールは更新されました");
+          const errorMessage = error instanceof Error ? error.message : "Googleカレンダーの更新に失敗しました";
+          toast.warning(`${errorMessage}。ローカルスケジュールは更新されました。`);
           // Continue with local update even if Google Calendar update fails
           googleCalendarEventId = editingSchedule.googleCalendarEventId;
         }
@@ -567,15 +516,23 @@ export default function Scheduler() {
 
           if (response.ok) {
             const data = await response.json();
-            googleCalendarEventId = data.event?.id;
-            toast.success("Googleカレンダーにイベントを作成しました");
+            if (data.success && data.event?.id) {
+              googleCalendarEventId = data.event.id;
+              toast.success("Googleカレンダーにイベントを作成しました");
+            } else {
+              throw new Error("無効なレスポンス形式");
+            }
           } else {
             const errorData = await response.json().catch(() => ({ detail: "作成に失敗しました" }));
-            toast.warning(`Googleカレンダーの作成に失敗: ${errorData.detail || "エラーが発生しました"}`);
+            const errorMessage = typeof errorData.detail === 'string' 
+              ? errorData.detail 
+              : errorData.detail?.message || errorData.message || "作成に失敗しました";
+            throw new Error(errorMessage);
           }
         } catch (error) {
           console.error("Googleカレンダー作成エラー:", error);
-          toast.warning("Googleカレンダーの作成に失敗しましたが、ローカルスケジュールは更新されました");
+          const errorMessage = error instanceof Error ? error.message : "Googleカレンダーの作成に失敗しました";
+          toast.warning(`${errorMessage}。ローカルスケジュールは更新されました。`);
         }
       }
 
@@ -610,21 +567,30 @@ export default function Scheduler() {
               startTime: scheduleForm.startTime,
               endTime: scheduleForm.endTime,
               description: scheduleForm.description || undefined,
+              type: scheduleForm.type,
             }),
           });
 
           if (response.ok) {
             const data = await response.json();
-            googleCalendarEventId = data.event?.id;
-            newSchedule.googleCalendarEventId = googleCalendarEventId;
-            toast.success("Googleカレンダーにイベントを作成しました");
+            if (data.success && data.event?.id) {
+              googleCalendarEventId = data.event.id;
+              newSchedule.googleCalendarEventId = googleCalendarEventId;
+              toast.success("Googleカレンダーにイベントを作成しました");
+            } else {
+              throw new Error("無効なレスポンス形式");
+            }
           } else {
             const errorData = await response.json().catch(() => ({ detail: "作成に失敗しました" }));
-            toast.warning(`Googleカレンダーの作成に失敗: ${errorData.detail || "エラーが発生しました"}`);
+            const errorMessage = typeof errorData.detail === 'string' 
+              ? errorData.detail 
+              : errorData.detail?.message || errorData.message || "作成に失敗しました";
+            throw new Error(errorMessage);
           }
         } catch (error) {
           console.error("Googleカレンダー作成エラー:", error);
-          toast.warning("Googleカレンダーの作成に失敗しましたが、ローカルスケジュールは作成されました");
+          const errorMessage = error instanceof Error ? error.message : "Googleカレンダーの作成に失敗しました";
+          toast.warning(`${errorMessage}。ローカルスケジュールは作成されました。`);
         }
       }
       
@@ -697,8 +663,13 @@ export default function Scheduler() {
   const handleDeleteSchedule = async (id: string) => {
     const scheduleToDelete = schedules.find((s) => s.id === id);
     
+    if (!scheduleToDelete) {
+      toast.error("削除するスケジュールが見つかりません");
+      return;
+    }
+    
     // Delete from Google Calendar if connected and event ID exists
-    if (isGoogleCalendarConnected && scheduleToDelete?.googleCalendarEventId) {
+    if (isGoogleCalendarConnected && scheduleToDelete.googleCalendarEventId) {
       try {
         const response = await fetch(
           `${API_BASE_URL}/api/v1/google-calendar/events/${scheduleToDelete.googleCalendarEventId}`,
@@ -711,17 +682,27 @@ export default function Scheduler() {
         );
 
         if (response.ok) {
-          toast.success("Googleカレンダーからイベントを削除しました");
+          const data = await response.json().catch(() => ({}));
+          if (data.success !== false) {
+            toast.success("Googleカレンダーからイベントを削除しました");
+          } else {
+            throw new Error(data.detail || "削除に失敗しました");
+          }
         } else {
           const errorData = await response.json().catch(() => ({ detail: "削除に失敗しました" }));
-          toast.warning(`Googleカレンダーの削除に失敗: ${errorData.detail || "エラーが発生しました"}`);
+          const errorMessage = typeof errorData.detail === 'string' 
+            ? errorData.detail 
+            : errorData.detail?.message || errorData.message || "削除に失敗しました";
+          throw new Error(errorMessage);
         }
       } catch (error) {
         console.error("Googleカレンダー削除エラー:", error);
-        toast.warning("Googleカレンダーの削除に失敗しましたが、ローカルスケジュールは削除されました");
+        const errorMessage = error instanceof Error ? error.message : "Googleカレンダーの削除に失敗しました";
+        toast.warning(`${errorMessage}。ローカルスケジュールは削除されました。`);
       }
     }
     
+    // Always delete from local schedules
     const updatedSchedules = schedules.filter((s) => s.id !== id);
     setSchedules(updatedSchedules);
     
@@ -895,9 +876,12 @@ export default function Scheduler() {
   };
 
   const handleGoogleCalendarSync = async () => {
-    setIsSyncing(true);
+    if (isSyncing) {
+      return; // Prevent multiple simultaneous syncs
+    }
+    
+    // Check connection status first
     try {
-      // Check connection status first
       const response = await fetch(`${API_BASE_URL}/api/v1/google-calendar/status`, {
         method: "GET",
         headers: {
@@ -907,7 +891,7 @@ export default function Scheduler() {
 
       if (!response.ok) {
         toast.error("Googleカレンダーに接続されていません");
-        setIsSyncing(false);
+        setIsGoogleCalendarConnected(false);
         return;
       }
 
@@ -916,15 +900,13 @@ export default function Scheduler() {
       if (!data.connected) {
         toast.error("Googleカレンダーに接続されていません");
         setIsGoogleCalendarConnected(false);
-        setIsSyncing(false);
         return;
       }
 
-      // Sync events from Google Calendar
+      // Sync events from Google Calendar (syncGoogleCalendarEvents内でsetIsSyncingが管理される)
       await syncGoogleCalendarEvents();
       
-      toast.success("Googleカレンダーと同期が完了しました");
-      setIsSyncing(false);
+      // Success message is shown in syncGoogleCalendarEvents
     } catch (error) {
       console.error("同期エラー:", error);
       toast.error("同期に失敗しました");
@@ -1052,9 +1034,9 @@ export default function Scheduler() {
             </CardHeader>
             <CardContent className="p-0">
               {/* Google Calendar風の週間ビュー */}
-              <div className="grid grid-cols-8 border-b border-border">
+              <div className="grid grid-cols-8 border-b-2 border-border">
                 {/* 時間列ヘッダー */}
-                <div className="border-r border-border p-2"></div>
+                <div className="border-r border-border p-3 bg-muted/30"></div>
                 {/* 日付ヘッダー */}
                 {weekDates.map((date, index) => {
                   const isToday = date.toDateString() === new Date().toDateString();
@@ -1063,30 +1045,30 @@ export default function Scheduler() {
                   return (
                     <div
                       key={index}
-                      className={`border-r border-border last:border-r-0 p-2 text-center ${
-                        isToday ? "bg-primary/5" : ""
+                      className={`border-r border-border last:border-r-0 p-3 text-center ${
+                        isToday ? "bg-primary/10" : "bg-muted/20"
                       }`}
                     >
                       <p
-                        className={`text-xs font-medium ${
+                        className={`text-sm font-semibold mb-1 ${
                           isSunday
                             ? "text-red-600 dark:text-red-400"
                             : isSaturday
                             ? "text-blue-600 dark:text-blue-400"
-                            : ""
+                            : "text-muted-foreground"
                         }`}
                       >
                         {dayNames[index]}
                       </p>
                       <p
-                        className={`text-lg font-semibold ${
+                        className={`text-2xl font-bold ${
                           isToday
                             ? "text-primary"
                             : isSunday
                             ? "text-red-600 dark:text-red-400"
                             : isSaturday
                             ? "text-blue-600 dark:text-blue-400"
-                            : ""
+                            : "text-foreground"
                         }`}
                       >
                         {date.getDate()}
@@ -1101,7 +1083,7 @@ export default function Scheduler() {
                   <React.Fragment key={`hour-row-${hour}`}>
                     <div
                       key={`time-${hour}`}
-                      className="border-r border-border p-1 text-xs text-muted-foreground text-right pr-2"
+                      className="border-r border-border p-2 text-sm font-medium text-muted-foreground text-right pr-3"
                     >
                       {hour.toString().padStart(2, "0")}:00
                     </div>
@@ -1113,7 +1095,7 @@ export default function Scheduler() {
                       return (
                         <div
                           key={`cell-${hour}-${dayIndex}`}
-                          className="border-r border-border last:border-r-0 border-b border-border min-h-[60px] relative p-1"
+                          className="border-r border-border last:border-r-0 border-b border-border min-h-[80px] relative p-2 hover:bg-accent/30 transition-colors cursor-pointer"
                           onClick={() => {
                             // Use local date components to ensure correct date
                             const year = date.getFullYear();
@@ -1143,10 +1125,10 @@ export default function Scheduler() {
                             return (
                               <div
                                 key={scheduleToShow.id}
-                                className="absolute left-0 right-0 mx-1 rounded px-2 py-1 text-xs cursor-pointer hover:opacity-80 transition-opacity group"
+                                className="absolute left-0 right-0 mx-1 rounded-md px-3 py-2 text-sm cursor-pointer hover:opacity-90 hover:shadow-md transition-all group"
                                 style={{
                                   top: `${topOffset}px`,
-                                  height: `${Math.max(height, 20)}px`,
+                                  height: `${Math.max(height, 24)}px`,
                                   backgroundColor: getDefaultColor(scheduleToShow.type),
                                   color: "#fff",
                                 }}
@@ -1155,7 +1137,7 @@ export default function Scheduler() {
                                   openEditSchedule(scheduleToShow);
                                 }}
                               >
-                                <div className="font-medium truncate">{scheduleToShow.title}</div>
+                                <div className="font-semibold truncate mb-0.5">{scheduleToShow.title}</div>
                                 <div className="text-xs opacity-90">
                                   {scheduleToShow.startTime} - {scheduleToShow.endTime}
                                 </div>
@@ -1279,7 +1261,7 @@ export default function Scheduler() {
                   return (
                   <div
                     key={day}
-                      className={`h-20 border border-border p-1 text-xs hover:bg-accent/50 hover:border-primary/50 transition-all cursor-pointer relative ${
+                      className={`h-28 border border-border p-2 text-sm hover:bg-accent/50 hover:border-primary/50 transition-all cursor-pointer relative ${
                         isToday
                           ? "bg-primary/10 border-primary ring-1 ring-primary/30"
                           : ""
@@ -1315,11 +1297,11 @@ export default function Scheduler() {
                           </span>
                         )}
                       </div>
-                      <div className="space-y-0.5 overflow-hidden">
+                      <div className="space-y-1 overflow-hidden">
                         {daySchedules.slice(0, 3).map((schedule) => (
                           <div
                             key={schedule.id}
-                            className="text-[8px] px-1 py-0.5 rounded truncate text-white font-medium leading-tight"
+                            className="text-xs px-2 py-1 rounded-md truncate text-white font-medium leading-tight shadow-sm"
                             style={{
                               backgroundColor: getDefaultColor(schedule.type),
                             }}
@@ -1329,7 +1311,7 @@ export default function Scheduler() {
                           </div>
                         ))}
                         {daySchedules.length > 3 && (
-                          <div className="text-[10px] text-primary font-bold">
+                          <div className="text-xs text-primary font-semibold pt-1">
                             +{daySchedules.length - 3}件
                           </div>
                         )}
