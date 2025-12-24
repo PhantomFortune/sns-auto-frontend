@@ -1169,7 +1169,7 @@ export default function PostSupport() {
 
                 {/* 右：生成 & プレビュー */}
                 <div className="space-y-4">
-                  <div className="flex flex-wrap gap-3">
+                  <div className="flex flex-wrap gap-3 mt-9">
                     <Button
                       onClick={handleGenerateText}
                       disabled={isGeneratingText}
