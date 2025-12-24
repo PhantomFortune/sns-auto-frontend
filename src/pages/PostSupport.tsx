@@ -173,24 +173,8 @@ export default function PostSupport() {
     },
   ]);
 
-  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([
-    {
-      id: "1",
-      type: "おはようVTuber",
-      content: "おはようございます！今日も配信頑張ります",
-      scheduledTime: "2025-11-23 07:00",
-      status: "pending",
-      needsApproval: true,
-    },
-    {
-      id: "2",
-      type: "配信告知",
-      content: "20時から雑談配信やります！遊びに来てね",
-      scheduledTime: "2025-11-23 19:00",
-      status: "approved",
-      needsApproval: true,
-    },
-  ]);
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
+  const [isLoadingScheduledPosts, setIsLoadingScheduledPosts] = useState(false);
 
   const [autoPostForm, setAutoPostForm] = useState<AutoPostForm>({
     postType: "朝の挨拶",
@@ -468,6 +452,133 @@ export default function PostSupport() {
     toast.success("投稿案を作成しました。確認後に予約へ追加できます。");
   };
 
+  const fetchScheduledPosts = async () => {
+    setIsLoadingScheduledPosts(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/storage/scheduled-posts`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "予約投稿の取得に失敗しました" }));
+        throw new Error(errorData.detail || "予約投稿の取得に失敗しました");
+      }
+
+      const data = await response.json();
+      
+      if (data.success && Array.isArray(data.posts)) {
+        // バックエンドのデータ形式をフロントエンドの形式に変換
+        const convertedPosts: ScheduledPost[] = data.posts.map((post: any) => {
+          const scheduledDate = new Date(post.scheduled_datetime);
+          const dateStr = scheduledDate.toISOString().split('T')[0];
+          const timeStr = scheduledDate.toTimeString().slice(0, 5);
+          
+          return {
+            id: post.id,
+            type: "予約投稿", // デフォルトタイプ
+            content: post.content,
+            scheduledTime: `${dateStr} ${timeStr}`,
+            status: post.status as "pending" | "approved" | "rejected" | "posted",
+            needsApproval: post.status === "pending",
+            imageUrl: post.image_path ? `${API_BASE_URL}/api/v1/storage/scheduled-posts/${post.id}/image` : undefined,
+          };
+        });
+        
+        setScheduledPosts(convertedPosts);
+      }
+    } catch (error) {
+      console.error("予約投稿取得エラー:", error);
+      toast.error("予約投稿の取得に失敗しました");
+    } finally {
+      setIsLoadingScheduledPosts(false);
+    }
+  };
+
+  const handleSaveScheduledPost = async () => {
+    const trimmed = generatedText.trim();
+    if (!trimmed) {
+      toast.error("先に文章を生成してください");
+      return;
+    }
+    if (trimmed.length > 280) {
+      toast.error("280文字以内に収めてください");
+      return;
+    }
+
+    const now = new Date();
+    const todayStr = now.toISOString().split("T")[0];
+    const defaultTime = now.toTimeString().slice(0, 5);
+    const datePart = autoPostForm.scheduledDate || todayStr;
+    const timePart = autoPostForm.scheduledTime || defaultTime;
+    
+    // 予約日時をISO形式に変換（JSTをUTCに変換）
+    const scheduledDateTime = new Date(`${datePart}T${timePart}:00+09:00`);
+
+    try {
+      // 画像をBase64に変換
+      let imageBase64: string | null = null;
+      if (autoPostImage.file) {
+        const reader = new FileReader();
+        imageBase64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            if (typeof reader.result === 'string') {
+              resolve(reader.result);
+            } else {
+              reject(new Error('Failed to convert image to base64'));
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(autoPostImage.file!);
+        });
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/v1/storage/scheduled-posts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content: trimmed,
+          scheduled_datetime: scheduledDateTime.toISOString(),
+          image_base64: imageBase64,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "予約投稿の保存に失敗しました" }));
+        const errorMessage = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : errorData.detail?.message || errorData.message || "予約投稿の保存に失敗しました";
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      toast.success("予約投稿を保存しました");
+      
+      // フォームをリセット
+      setGeneratedText("");
+      setAutoPostImage({ file: null, preview: null });
+      if (autoPostImageInputRef.current) {
+        autoPostImageInputRef.current.value = "";
+      }
+      
+      // 予約済み投稿タブに切り替えて、リストを更新
+      setActiveTab("scheduled");
+      // 予約済み投稿リストを再取得
+      fetchScheduledPosts();
+      
+    } catch (error) {
+      console.error("予約投稿保存エラー:", error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "予約投稿の保存に失敗しました。";
+      toast.error(`保存エラー: ${errorMessage}`);
+    }
+  };
+
   const handleApprovePost = () => {
     if (pendingPost) {
       // 承認時はステータスをapprovedに変更して追加
@@ -564,28 +675,100 @@ export default function PostSupport() {
     }
   };
 
-  const handleSaveEdit = () => {
-    if (editingPost) {
-      // datetime-local形式を通常形式に変換（"2025-11-23T07:00" -> "2025-11-23 07:00"）
-      const formattedTime = editForm.scheduledTime.replace("T", " ");
-      setScheduledPosts((prev) =>
-        prev.map((p) =>
-          p.id === editingPost.id
-            ? {
-                ...p,
-                type: editForm.type,
+  const handleSaveEdit = async () => {
+    if (!editingPost) return;
+
+    try {
+      // 予約日時をISO形式に変換
+      const scheduledDateTime = new Date(editForm.scheduledTime);
+      
+      // 画像をBase64に変換（新しい画像が選択された場合）
+      let imageBase64: string | undefined = undefined;
+      if (editForm.imageUrl && editForm.imageUrl.startsWith('data:')) {
+        // 既にBase64形式の場合はそのまま使用
+        imageBase64 = editForm.imageUrl;
+      } else if (editForm.imageUrl && !editForm.imageUrl.startsWith('http')) {
+        // 新しい画像が選択された場合（FileReaderで読み込まれた場合）
+        imageBase64 = editForm.imageUrl;
+      } else if (!editForm.imageUrl) {
+        // 画像を削除する場合は空文字列を送信
+        imageBase64 = "";
+      }
+      // 既存の画像URLの場合はundefinedのまま（更新しない）
+
+      const updateData: any = {
                 content: editForm.content,
-                scheduledTime: formattedTime,
-                imageUrl: editForm.imageUrl || undefined,
+        scheduled_datetime: scheduledDateTime.toISOString(),
                 status: editForm.status,
-              }
-            : p
-        )
-      );
+      };
+
+      if (imageBase64 !== undefined) {
+        updateData.image_base64 = imageBase64;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/v1/storage/scheduled-posts/${editingPost.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(updateData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "予約投稿の更新に失敗しました" }));
+        const errorMessage = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : errorData.detail?.message || errorData.message || "予約投稿の更新に失敗しました";
+        throw new Error(errorMessage);
+      }
+
+      toast.success("予約投稿を更新しました");
       setIsEditDialogOpen(false);
       setEditingPost(null);
       setEditForm({ type: "", content: "", scheduledTime: "", imageUrl: "", status: "pending" });
-      console.log(`予約投稿編集完了: ${editingPost.id}`);
+      
+      // リストを再取得
+      fetchScheduledPosts();
+    } catch (error) {
+      console.error("予約投稿更新エラー:", error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "予約投稿の更新に失敗しました。";
+      toast.error(`更新エラー: ${errorMessage}`);
+    }
+  };
+
+  const handleDeleteScheduledPost = async (postId: string) => {
+    if (!confirm("この予約投稿を削除しますか？")) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/storage/scheduled-posts/${postId}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "予約投稿の削除に失敗しました" }));
+        const errorMessage = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : errorData.detail?.message || errorData.message || "予約投稿の削除に失敗しました";
+        throw new Error(errorMessage);
+      }
+
+      toast.success("予約投稿を削除しました");
+      
+      // リストを再取得
+      fetchScheduledPosts();
+    } catch (error) {
+      console.error("予約投稿削除エラー:", error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "予約投稿の削除に失敗しました。";
+      toast.error(`削除エラー: ${errorMessage}`);
     }
   };
 
@@ -688,6 +871,11 @@ export default function PostSupport() {
       setIsLoadingSchedules(false);
     }
   };
+
+  // 予約済み投稿を初回取得
+  useEffect(() => {
+    fetchScheduledPosts();
+  }, []);
 
   // WebSocket接続でリアルタイム更新
   useEffect(() => {
@@ -821,11 +1009,11 @@ export default function PostSupport() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">投稿サポート</h1>
-          <p className="text-muted-foreground mt-2">
-            X（旧Twitter）への自動投稿と返信サポートを管理します
-          </p>
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">投稿サポート</h1>
+        <p className="text-muted-foreground mt-2">
+          X（旧Twitter）への自動投稿と返信サポートを管理します
+        </p>
         </div>
         <div className="flex items-center gap-3">
           {/* 通知アイコン（ドロップダウンメニュー） */}
@@ -1251,14 +1439,22 @@ export default function PostSupport() {
                     }
                   />
                 </div>
-                <div className="flex md:justify-end">
+                <div className="flex md:justify-end gap-2">
                   <Button
                     onClick={handleSubmitAutoPost}
                     disabled={isGeneratingText || generatedText.trim().length === 0 || generatedText.length > 280}
                     className="w-full md:w-auto bg-primary hover:bg-primary-hover"
                   >
                     <Send className="h-4 w-4 mr-2" />
-                    投稿
+                    即時投稿
+                  </Button>
+                  <Button
+                    onClick={handleSaveScheduledPost}
+                    disabled={isGeneratingText || generatedText.trim().length === 0 || generatedText.length > 280}
+                    className="w-full md:w-auto bg-primary hover:bg-primary-hover"
+                  >
+                    <Clock className="h-4 w-4 mr-2" />
+                    予約投稿
                   </Button>
                 </div>
               </div>
@@ -1284,7 +1480,11 @@ export default function PostSupport() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {scheduledPosts.length === 0 ? (
+                {isLoadingScheduledPosts ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    読み込み中...
+                  </p>
+                ) : scheduledPosts.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
                     予約投稿がありません
                   </p>
@@ -1413,10 +1613,7 @@ export default function PostSupport() {
                           variant="ghost"
                           size="sm"
                           className="text-destructive"
-                          onClick={() => {
-                            setScheduledPosts((prev) => prev.filter((p) => p.id !== post.id));
-                            console.log(`予約投稿削除: ${post.id}`);
-                          }}
+                          onClick={() => handleDeleteScheduledPost(post.id)}
                         >
                           <Trash2 className="h-3 w-3" />
                         </Button>
