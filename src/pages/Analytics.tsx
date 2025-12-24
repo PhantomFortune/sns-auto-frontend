@@ -149,6 +149,8 @@ export default function Analytics() {
   const [youtubeImprovementSuggestion, setYoutubeImprovementSuggestion] = useState<ImprovementSuggestion | null>(null);
   const [isGeneratingYoutubeSuggestions, setIsGeneratingYoutubeSuggestions] = useState(false);
   const [retryTimeoutId, setRetryTimeoutId] = useState<NodeJS.Timeout | null>(null);
+  const [retryCount, setRetryCount] = useState<number>(0);
+  const MAX_RETRY_COUNT = 2; // Maximum number of retries for rate limit errors
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSpeakingYoutube, setIsSpeakingYoutube] = useState(false);
   const [cevioCast, setCevioCast] = useState<string>("フィーちゃん");
@@ -239,7 +241,7 @@ export default function Analytics() {
   };
 
   // X Analytics handlers
-  const handleXAnalyze = async () => {
+  const handleXAnalyze = async (isRetry: boolean = false) => {
     setIsXAnalyzing(true);
 
     if (retryTimeoutId) {
@@ -259,12 +261,54 @@ export default function Analytics() {
         const errorData = await response.json().catch(() => ({ detail: "データ取得に失敗しました" }));
         setIsXAnalyzing(false);
 
-        if (errorData.api_timeout && errorData.retry_after_seconds) {
+        // Handle 429 (Rate Limit) errors specifically
+        if (response.status === 429) {
+          // 429エラーはレート制限なので、リトライしても同じエラーが発生する可能性が高い
+          // リトライ回数に制限を設ける
+          if (isRetry && retryCount >= MAX_RETRY_COUNT) {
+            toast.error("X APIのレート制限に達しました。しばらく待ってから再度お試しください。");
+            setRetryCount(0);
+            setXAnalyticsData(null);
+            return;
+          }
+          
+          // 初回の429エラーまたはリトライ回数が上限未満の場合
+          if (errorData.api_timeout && errorData.retry_after_seconds) {
+            const retrySeconds = errorData.retry_after_seconds;
+            const currentRetryCount = isRetry ? retryCount + 1 : 1;
+            
+            if (currentRetryCount <= MAX_RETRY_COUNT) {
+              toast.warning(`X APIのレート制限に達しました。${retrySeconds}秒後に再試行します（${currentRetryCount}/${MAX_RETRY_COUNT}）`);
+
+              const timeoutId = setTimeout(() => {
+                setRetryCount(currentRetryCount);
+                handleXAnalyze(true);
+              }, retrySeconds * 1000);
+
+              setRetryTimeoutId(timeoutId);
+              return;
+            } else {
+              toast.error("X APIのレート制限に達しました。最大リトライ回数に達したため、しばらく待ってから再度お試しください。");
+              setRetryCount(0);
+              setXAnalyticsData(null);
+              return;
+            }
+          } else {
+            // 429エラーだが、retry_after_secondsがない場合
+            toast.error("X APIのレート制限に達しました。しばらく待ってから再度お試しください。");
+            setRetryCount(0);
+            setXAnalyticsData(null);
+            return;
+          }
+        }
+
+        // Handle other timeout errors (503, etc.)
+        if (errorData.api_timeout && errorData.retry_after_seconds && response.status !== 429) {
           const retrySeconds = errorData.retry_after_seconds;
           toast.warning(`X APIがタイムアウトしました。${retrySeconds}秒後に自動的に再試行します。`);
 
           const timeoutId = setTimeout(() => {
-            handleXAnalyze();
+            handleXAnalyze(true);
           }, retrySeconds * 1000);
 
           setRetryTimeoutId(timeoutId);
@@ -274,8 +318,12 @@ export default function Analytics() {
         throw new Error(errorData.detail?.message || errorData.detail || errorData.message || "データ取得に失敗しました");
       }
 
+      // Success - reset retry count
+      setRetryCount(0);
+
       const data: XAnalyticsData = await response.json();
       setIsXAnalyzing(false);
+      setRetryCount(0); // Reset retry count on success
 
       // Validate data quality: check if we have meaningful data
       const hasData = data.engagement_trend && data.engagement_trend.length > 0;
@@ -1500,7 +1548,7 @@ export default function Analytics() {
                   </Select>
                 </div>
                 <Button
-                  onClick={handleXAnalyze}
+                  onClick={() => handleXAnalyze(false)}
                   disabled={isXAnalyzing}
                   size="sm"
                   className="h-9 bg-sky-500 hover:bg-sky-600 text-white disabled:opacity-50"
