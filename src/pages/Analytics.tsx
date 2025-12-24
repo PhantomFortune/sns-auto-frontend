@@ -674,7 +674,7 @@ export default function Analytics() {
   };
 
   // Excel export handler for X
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (!xAnalyticsData || !improvementSuggestion) {
       toast.error("レポートを出力するには、分析と改善提案が必要です");
       return;
@@ -682,101 +682,66 @@ export default function Analytics() {
 
     try {
       const now = new Date();
-      const timestamp = now.toLocaleString("ja-JP", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).replace(/[\/\s:]/g, "_");
-
       const periodLabel = xPeriod === "2hours" ? "過去2時間" : xPeriod === "1day" ? "過去1日" : xPeriod === "1week" ? "過去1週間" : "過去1ヶ月間";
 
-      // Create workbook
-      const wb = XLSX.utils.book_new();
+      // バックエンドAPIに保存
+      try {
+        const saveResponse = await fetch(`${API_BASE_URL}/api/v1/storage/reports`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            report_type: "x_analytics",
+            analytics_data: {
+              likes_count: xAnalyticsData.likes_count,
+              retweets_count: xAnalyticsData.retweets_count,
+              replies_count: xAnalyticsData.replies_count,
+              impressions_count: xAnalyticsData.impressions_count,
+              followers_count: xAnalyticsData.followers_count,
+              engagement_trend: xAnalyticsData.engagement_trend,
+              hashtag_analysis: xAnalyticsData.hashtag_analysis,
+            },
+            improvement_suggestion: {
+              summary: improvementSuggestion.summary,
+              key_insights: improvementSuggestion.key_insights,
+              recommendations: improvementSuggestion.recommendations,
+              best_posting_time: improvementSuggestion.best_posting_time,
+              hashtag_recommendations: improvementSuggestion.hashtag_recommendations,
+            },
+            period: periodLabel,
+          }),
+        });
 
-      // Sheet 1: KPI Summary
-      const kpiData = [
-        ["X分析レポート"],
-        [""],
-        ["生成日時", now.toLocaleString("ja-JP")],
-        ["分析期間", periodLabel],
-        [""],
-        ["KPI サマリー"],
-        ["指標", "値"],
-        ["いいね数", xAnalyticsData.likes_count],
-        ["リツイート数", xAnalyticsData.retweets_count],
-        ["返信数", xAnalyticsData.replies_count],
-        ["インプレッション数", xAnalyticsData.impressions_count],
-        ["フォロワー数", xAnalyticsData.followers_count],
-      ];
-      const wsKPI = XLSX.utils.aoa_to_sheet(kpiData);
-      
-      // Set column widths
-      wsKPI["!cols"] = [{ wch: 20 }, { wch: 25 }];
-      
-      XLSX.utils.book_append_sheet(wb, wsKPI, "KPIサマリー");
+        if (!saveResponse.ok) {
+          const errorData = await saveResponse.json().catch(() => ({ detail: "レポートの保存に失敗しました" }));
+          const errorMessage = typeof errorData.detail === 'string' 
+            ? errorData.detail 
+            : errorData.detail?.message || errorData.message || "レポートの保存に失敗しました";
+          throw new Error(errorMessage);
+        }
 
-      // Sheet 2: Hashtag Analysis
-      const hashtagData = [
-        ["ハッシュタグ分析"],
-        [""],
-        ["ハッシュタグ", "いいね数"],
-        ...xAnalyticsData.hashtag_analysis?.slice(0, 3).map((h) => [`#${h.tag}`, h.likes]) || [],
-      ];
-      const wsHashtag = XLSX.utils.aoa_to_sheet(hashtagData);
-      wsHashtag["!cols"] = [{ wch: 20 }, { wch: 15 }];
-      XLSX.utils.book_append_sheet(wb, wsHashtag, "ハッシュタグ分析");
-
-      // Sheet 3: Trend Data
-      const trendHeader = ["時間", "エンゲージメント", "インプレッション"];
-      const trendRows = xAnalyticsData.engagement_trend?.map((item) => [
-        item.time,
-        item.engagement,
-        item.impressions,
-      ]) || [];
-      const wsTrend = XLSX.utils.aoa_to_sheet([["トレンドデータ"], [""], trendHeader, ...trendRows]);
-      wsTrend["!cols"] = [{ wch: 15 }, { wch: 18 }, { wch: 18 }];
-      XLSX.utils.book_append_sheet(wb, wsTrend, "トレンドデータ");
-
-      // Sheet 4: Improvement Suggestions
-      const suggestionsData = [
-        ["AI改善提案"],
-        [""],
-        ["サマリー"],
-        [improvementSuggestion.summary],
-        [""],
-        ["主要インサイト"],
-        ...improvementSuggestion.key_insights.map((insight, i) => [`${i + 1}. ${insight}`]),
-        [""],
-        ["改善推奨事項"],
-        ...improvementSuggestion.recommendations.map((rec, i) => [`${i + 1}. ${rec}`]),
-        [""],
-        ["推奨投稿時間", improvementSuggestion.best_posting_time],
-        [""],
-        ["推奨ハッシュタグ", improvementSuggestion.hashtag_recommendations.join(", ")],
-      ];
-      const wsSuggestions = XLSX.utils.aoa_to_sheet(suggestionsData);
-      wsSuggestions["!cols"] = [{ wch: 80 }];
-      XLSX.utils.book_append_sheet(wb, wsSuggestions, "改善提案");
-
-      // Save Excel file (ensure UTF-8 / Japanese characters are preserved)
-      // NOTE: Some versions of Excel on Windows expect explicit UTF-8 metadata.
-      // The xlsx format is Unicode-safe, but we still pass options for maximum compatibility.
-      XLSX.writeFile(wb, `X_Analytics_Report_${timestamp}.xlsx`, {
-        bookType: "xlsx",
-        compression: true,
-        ...({ codepage: 65001 } as any), // UTF-8 - codepage is supported by SheetJS but not in types
-      });
-      toast.success("Excelレポートをダウンロードしました");
+        const saveResult = await saveResponse.json();
+        toast.success(`レポートを保存しました: ${saveResult.file_name}`);
+      } catch (saveError) {
+        console.error("レポート保存エラー:", saveError);
+        const errorMessage = saveError instanceof Error 
+          ? saveError.message 
+          : "レポートの保存に失敗しました。ストレージの権限やディスク容量を確認してください。";
+        toast.error(`保存エラー: ${errorMessage}`);
+        throw saveError; // エラーを再スローして、外側のcatchで処理
+      }
     } catch (error) {
-      console.error("Excel出力エラー:", error);
-      toast.error("Excelの出力に失敗しました");
+      console.error("レポート保存エラー:", error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "レポートの保存に失敗しました。ネットワーク接続やサーバーの状態を確認してください。";
+      toast.error(`保存エラー: ${errorMessage}`);
     }
   };
 
   // Excel export handler for YouTube
-  const handleExportYoutubeExcel = () => {
+  const handleExportYoutubeExcel = async () => {
     if (!youtubeAnalyticsData || !youtubeImprovementSuggestion) {
       toast.error("レポートを出力するには、分析と改善提案が必要です");
       return;
@@ -784,95 +749,62 @@ export default function Analytics() {
 
     try {
       const now = new Date();
-      const timestamp = now.toLocaleString("ja-JP", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).replace(/[\/\s:]/g, "_");
-
       const periodLabel = youtubePeriod === "1week" ? "過去1週間" : "過去1ヶ月間";
 
-      // Create workbook
-      const wb = XLSX.utils.book_new();
+      // バックエンドAPIに保存
+      try {
+        const saveResponse = await fetch(`${API_BASE_URL}/api/v1/storage/reports`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            report_type: "youtube_analytics",
+            analytics_data: {
+              views: youtubeAnalyticsData.views,
+              estimatedMinutesWatched: youtubeAnalyticsData.estimatedMinutesWatched,
+              averageViewDuration: youtubeAnalyticsData.averageViewDuration,
+              viewerRetentionRate: youtubeAnalyticsData.viewerRetentionRate,
+              subscribersGained: youtubeAnalyticsData.subscribersGained,
+              subscribersLost: youtubeAnalyticsData.subscribersLost,
+              shares: youtubeAnalyticsData.shares,
+              dailyData: youtubeAnalyticsData.dailyData,
+            },
+            improvement_suggestion: {
+              summary: youtubeImprovementSuggestion.summary,
+              key_insights: youtubeImprovementSuggestion.key_insights,
+              recommendations: youtubeImprovementSuggestion.recommendations,
+              best_posting_time: youtubeImprovementSuggestion.best_posting_time,
+              hashtag_recommendations: youtubeImprovementSuggestion.hashtag_recommendations || [],
+            },
+            period: periodLabel,
+          }),
+        });
 
-      // Sheet 1: KPI Summary
-      const kpiData = [
-        ["YouTube分析レポート"],
-        [""],
-        ["生成日時", now.toLocaleString("ja-JP")],
-        ["分析期間", periodLabel],
-        [""],
-        ["KPI サマリー"],
-        ["指標", "値"],
-        ["再生回数", youtubeAnalyticsData.views],
-        ["総再生時間（分）", Math.round(youtubeAnalyticsData.estimatedMinutesWatched)],
-        ["平均視聴時間（秒）", Math.round(youtubeAnalyticsData.averageViewDuration)],
-        ["視聴継続率（%）", youtubeAnalyticsData.viewerRetentionRate?.toFixed(1) || "-"],
-        ["登録者増加", youtubeAnalyticsData.subscribersGained],
-        ["登録者減少", youtubeAnalyticsData.subscribersLost],
-        ["純増登録者数", youtubeAnalyticsData.subscribersGained - youtubeAnalyticsData.subscribersLost],
-        ["共有数", youtubeAnalyticsData.shares],
-      ];
-      const wsKPI = XLSX.utils.aoa_to_sheet(kpiData);
-      
-      // Set column widths
-      wsKPI["!cols"] = [{ wch: 25 }, { wch: 25 }];
-      
-      XLSX.utils.book_append_sheet(wb, wsKPI, "KPIサマリー");
+        if (!saveResponse.ok) {
+          const errorData = await saveResponse.json().catch(() => ({ detail: "レポートの保存に失敗しました" }));
+          const errorMessage = typeof errorData.detail === 'string' 
+            ? errorData.detail 
+            : errorData.detail?.message || errorData.message || "レポートの保存に失敗しました";
+          throw new Error(errorMessage);
+        }
 
-      // Sheet 2: Daily Trend Data
-      if (youtubeAnalyticsData.dailyData && youtubeAnalyticsData.dailyData.length > 0) {
-        const trendHeader = ["日付", "再生回数", "総再生時間（分）", "純増登録者数", "平均視聴時間（秒）"];
-        const trendRows = youtubeAnalyticsData.dailyData.map((item) => [
-          item.date,
-          item.views,
-          Math.round(item.estimatedMinutesWatched),
-          item.netSubscribers,
-          Math.round(item.averageViewDuration),
-        ]);
-        const wsTrend = XLSX.utils.aoa_to_sheet([["日次トレンドデータ"], [""], trendHeader, ...trendRows]);
-        wsTrend["!cols"] = [{ wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 20 }];
-        XLSX.utils.book_append_sheet(wb, wsTrend, "日次トレンド");
+        const saveResult = await saveResponse.json();
+        toast.success(`レポートを保存しました: ${saveResult.file_name}`);
+      } catch (saveError) {
+        console.error("レポート保存エラー:", saveError);
+        const errorMessage = saveError instanceof Error 
+          ? saveError.message 
+          : "レポートの保存に失敗しました。ストレージの権限やディスク容量を確認してください。";
+        toast.error(`保存エラー: ${errorMessage}`);
+        throw saveError; // エラーを再スローして、外側のcatchで処理
       }
-
-      // Sheet 3: Improvement Suggestions
-      const suggestionsData = [
-        ["AI改善提案"],
-        [""],
-        ["サマリー"],
-        [youtubeImprovementSuggestion.summary],
-        [""],
-        ["主要インサイト"],
-        ...youtubeImprovementSuggestion.key_insights.map((insight, i) => [`${i + 1}. ${insight}`]),
-        [""],
-        ["改善推奨事項"],
-        ...youtubeImprovementSuggestion.recommendations.map((rec, i) => [`${i + 1}. ${rec}`]),
-      ];
-      
-      if (youtubeImprovementSuggestion.best_posting_time) {
-        suggestionsData.push([""], ["推奨投稿時間", youtubeImprovementSuggestion.best_posting_time]);
-      }
-      
-      if (youtubeImprovementSuggestion.hashtag_recommendations && youtubeImprovementSuggestion.hashtag_recommendations.length > 0) {
-        suggestionsData.push([""], ["推奨ハッシュタグ", youtubeImprovementSuggestion.hashtag_recommendations.join(", ")]);
-      }
-      
-      const wsSuggestions = XLSX.utils.aoa_to_sheet(suggestionsData);
-      wsSuggestions["!cols"] = [{ wch: 80 }];
-      XLSX.utils.book_append_sheet(wb, wsSuggestions, "改善提案");
-
-      // Save Excel file
-      XLSX.writeFile(wb, `YouTube_Analytics_Report_${timestamp}.xlsx`, {
-        bookType: "xlsx",
-        compression: true,
-        ...({ codepage: 65001 } as any), // UTF-8
-      });
-      toast.success("Excelレポートをダウンロードしました");
     } catch (error) {
-      console.error("Excel出力エラー:", error);
-      toast.error("Excelの出力に失敗しました");
+      console.error("レポート保存エラー:", error);
+      const errorMessage = error instanceof Error 
+        ? error.message 
+        : "レポートの保存に失敗しました。ネットワーク接続やサーバーの状態を確認してください。";
+      toast.error(`保存エラー: ${errorMessage}`);
     }
   };
 
