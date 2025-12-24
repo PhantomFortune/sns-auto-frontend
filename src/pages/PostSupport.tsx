@@ -476,6 +476,13 @@ export default function PostSupport() {
           const dateStr = scheduledDate.toISOString().split('T')[0];
           const timeStr = scheduledDate.toTimeString().slice(0, 5);
           
+          // 画像URLにupdated_atタイムスタンプを追加してキャッシュを回避
+          let imageUrl: string | undefined = undefined;
+          if (post.image_path) {
+            const updatedAt = post.updated_at ? new Date(post.updated_at).getTime() : Date.now();
+            imageUrl = `${API_BASE_URL}/api/v1/storage/scheduled-posts/${post.id}/image?t=${updatedAt}`;
+          }
+          
           return {
             id: post.id,
             type: "予約投稿", // デフォルトタイプ
@@ -483,7 +490,7 @@ export default function PostSupport() {
             scheduledTime: `${dateStr} ${timeStr}`,
             status: post.status as "pending" | "approved" | "rejected" | "posted",
             needsApproval: post.status === "pending",
-            imageUrl: post.image_path ? `${API_BASE_URL}/api/v1/storage/scheduled-posts/${post.id}/image` : undefined,
+            imageUrl: imageUrl,
           };
         });
         
