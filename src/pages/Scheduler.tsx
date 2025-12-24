@@ -388,18 +388,107 @@ export default function Scheduler() {
     }
   }, [isGoogleCalendarConnected]);
 
-  // Real-time sync: Poll Google Calendar for changes every 30 seconds when connected
+  // Real-time sync: WebSocket + Polling fallback
   useEffect(() => {
     if (!isGoogleCalendarConnected) {
       return;
     }
 
-    // Set up polling interval for real-time sync
-    const pollInterval = setInterval(() => {
-      syncGoogleCalendarEvents();
-    }, 30000); // Poll every 30 seconds (reduced frequency to avoid rate limits)
-
-    return () => clearInterval(pollInterval);
+    // WebSocket接続を確立
+    if (!API_BASE_URL) {
+      console.warn('API_BASE_URL is not set. Falling back to polling only.');
+      const pollInterval = setInterval(() => {
+        syncGoogleCalendarEvents();
+      }, 30000);
+      return () => clearInterval(pollInterval);
+    }
+    
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const apiUrl = new URL(API_BASE_URL);
+    const wsHost = apiUrl.host;
+    const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
+    
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    let pollInterval: NodeJS.Timeout | null = null;
+    
+    const connectWebSocket = () => {
+      try {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+          console.log('WebSocket connected for schedule updates');
+          reconnectAttempts = 0;
+          // Clear polling when WebSocket is connected
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'schedule_update' || data.type === 'connected') {
+              console.log('Schedule update received via WebSocket:', data);
+              syncGoogleCalendarEvents();
+            }
+          } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+          }
+        };
+        
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+        
+        ws.onclose = () => {
+          console.log('WebSocket disconnected');
+          // Fallback to polling when WebSocket is disconnected
+          if (!pollInterval) {
+            pollInterval = setInterval(() => {
+              syncGoogleCalendarEvents();
+            }, 30000);
+          }
+          
+          // Reconnect attempt
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            console.log(`Reconnecting WebSocket in ${delay}ms (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
+            reconnectTimeout = setTimeout(() => {
+              connectWebSocket();
+            }, delay);
+          } else {
+            console.warn('Max reconnection attempts reached. Using polling only.');
+          }
+        };
+      } catch (error) {
+        console.error('Error creating WebSocket connection:', error);
+        // Fallback to polling
+        if (!pollInterval) {
+          pollInterval = setInterval(() => {
+            syncGoogleCalendarEvents();
+          }, 30000);
+        }
+      }
+    };
+    
+    connectWebSocket();
+    
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
   }, [isGoogleCalendarConnected]);
 
   // 重要イベントスケジュールを取得（現在時点から3ヶ月以内）
@@ -2123,7 +2212,7 @@ export default function Scheduler() {
       {/* Color Legend */}
       <Card className="border-border shadow-sm">
         <CardContent>
-          <div className="grid grid-cols-1 mt-4 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 mt-4 md:grid-cols-4 gap-3">
             {([
               { type: "YouTubeライブ配信", color: getDefaultColor("YouTubeライブ配信") },
               { type: "X自動投稿", color: getDefaultColor("X自動投稿") },
