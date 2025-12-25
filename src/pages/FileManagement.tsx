@@ -70,6 +70,23 @@ export default function FileManagement() {
   const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
+  const [storageStats, setStorageStats] = useState<{
+    drive: {
+      total_bytes: number;
+      used_bytes: number;
+      free_bytes: number;
+      total_gb: number;
+      used_gb: number;
+      free_gb: number;
+    };
+    storage_directory: {
+      used_bytes: number;
+      used_gb: number;
+      path: string;
+    };
+    database_total_bytes: number;
+    database_total_gb: number;
+  } | null>(null);
 
   // UI状態
   const [activeTab, setActiveTab] = useState("reports");
@@ -147,10 +164,35 @@ export default function FileManagement() {
     }
   };
 
+  // ストレージ統計取得
+  const fetchStorageStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/storage/storage-stats`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("ストレージ統計の取得に失敗しました");
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        setStorageStats(data);
+      }
+    } catch (error) {
+      console.error("ストレージ統計取得エラー:", error);
+      // エラー時は静かに失敗（ユーザーには通知しない）
+    }
+  };
+
   // 初回ロード
   useEffect(() => {
     fetchReports();
     fetchScheduledPosts();
+    fetchStorageStats();
   }, []);
 
   // レポートフィルタリング
@@ -375,41 +417,49 @@ export default function FileManagement() {
   };
 
   // ストレージ使用状況の計算
-  const storageStats = useMemo(() => {
-    const totalBytes = reports.reduce((sum, r) => sum + r.file_size, 0) +
-      scheduledPosts.reduce((sum, p) => {
-        // 画像サイズは正確に取得できないため、おおよその推定値を使用
-        return sum;
-      }, 0);
+  const displayStats = useMemo(() => {
+    if (!storageStats) {
+      // フォールバック: データベースの合計のみ使用
+      const dbTotalBytes = reports.reduce((sum, r) => sum + r.file_size, 0);
+      return {
+        used: dbTotalBytes / (1024 ** 3),
+        total: 120,
+        percentage: (dbTotalBytes / (1024 ** 3) / 120) * 100,
+        byType: {
+          youtube: reports
+            .filter((r) => r.report_type === "youtube_analytics")
+            .reduce((sum, r) => sum + r.file_size, 0) / (1024 ** 2),
+          x: reports
+            .filter((r) => r.report_type === "x_analytics")
+            .reduce((sum, r) => sum + r.file_size, 0) / (1024 ** 2),
+          posts: scheduledPosts.length,
+        },
+      };
+    }
 
-    const totalGB = totalBytes / (1024 * 1024 * 1024);
-    const maxGB = 120;
-    const percentage = (totalGB / maxGB) * 100;
-
-    const byType = {
-      youtube: reports
-        .filter((r) => r.report_type === "youtube_analytics")
-        .reduce((sum, r) => sum + r.file_size, 0),
-      x: reports
-        .filter((r) => r.report_type === "x_analytics")
-        .reduce((sum, r) => sum + r.file_size, 0),
-      posts: scheduledPosts.length,
-    };
+    // 実際のドライブ容量を使用
+    const usedGB = storageStats.storage_directory.used_gb;
+    const totalGB = storageStats.drive.total_gb;
+    const percentage = totalGB > 0 ? (usedGB / totalGB) * 100 : 0;
 
     return {
+      used: usedGB,
       total: totalGB,
-      max: maxGB,
       percentage: Math.min(percentage, 100),
       byType: {
-        youtube: byType.youtube / (1024 * 1024),
-        x: byType.x / (1024 * 1024),
-        posts: byType.posts,
+        youtube: reports
+          .filter((r) => r.report_type === "youtube_analytics")
+          .reduce((sum, r) => sum + r.file_size, 0) / (1024 ** 2),
+        x: reports
+          .filter((r) => r.report_type === "x_analytics")
+          .reduce((sum, r) => sum + r.file_size, 0) / (1024 ** 2),
+        posts: scheduledPosts.length,
       },
     };
-  }, [reports, scheduledPosts]);
+  }, [reports, scheduledPosts, storageStats]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-x-hidden">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">ファイル管理</h1>
@@ -546,7 +596,7 @@ export default function FileManagement() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar">
+                <div className="space-y-3 max-h-[600px] overflow-y-auto overflow-x-hidden custom-scrollbar">
                   {filteredReports.map((report) => (
                     <div
                       key={report.id}
@@ -632,7 +682,7 @@ export default function FileManagement() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar">
+                <div className="space-y-3 max-h-[600px] overflow-y-auto overflow-x-hidden custom-scrollbar">
                   {filteredPosts.map((post) => (
                     <div
                       key={post.id}
@@ -722,36 +772,41 @@ export default function FileManagement() {
               <div className="flex justify-between text-sm mb-2">
                 <span>使用容量</span>
                 <span className="font-medium">
-                  {storageStats.total.toFixed(2)} GB / {storageStats.max} GB
+                  {displayStats.used.toFixed(2)} GB / {displayStats.total.toFixed(2)} GB
                 </span>
               </div>
               <div className="h-2 bg-muted rounded-full overflow-hidden">
                 <div
                   className="h-full bg-gradient-primary transition-all"
-                  style={{ width: `${storageStats.percentage}%` }}
+                  style={{ width: `${displayStats.percentage}%` }}
                 />
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                {storageStats.percentage.toFixed(1)}% 使用中
+                {displayStats.percentage.toFixed(1)}% 使用中
+                {storageStats && (
+                  <span className="ml-2">
+                    (空き容量: {storageStats.drive.free_gb.toFixed(2)} GB)
+                  </span>
+                )}
               </p>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               <div className="rounded-lg bg-muted p-3">
                 <p className="text-xs text-muted-foreground mb-1">YouTube分析レポート</p>
                 <p className="text-lg font-bold">
-                  {storageStats.byType.youtube.toFixed(1)} MB
+                  {displayStats.byType.youtube.toFixed(1)} MB
                 </p>
               </div>
               <div className="rounded-lg bg-muted p-3">
                 <p className="text-xs text-muted-foreground mb-1">X分析レポート</p>
                 <p className="text-lg font-bold">
-                  {storageStats.byType.x.toFixed(1)} MB
+                  {displayStats.byType.x.toFixed(1)} MB
                 </p>
               </div>
               <div className="rounded-lg bg-muted p-3">
                 <p className="text-xs text-muted-foreground mb-1">予約投稿</p>
                 <p className="text-lg font-bold">
-                  {storageStats.byType.posts} 件
+                  {displayStats.byType.posts} 件
                 </p>
               </div>
             </div>
