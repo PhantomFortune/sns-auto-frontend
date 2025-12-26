@@ -274,6 +274,7 @@ export default function PostSupport() {
   const autoPostImageInputRef = useRef<HTMLInputElement | null>(null);
 
   // API Base URL
+  // Use empty string for relative URLs (proxy will handle routing)
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
   const deletePost = (id: string) => {
@@ -373,7 +374,8 @@ export default function PostSupport() {
   const handleGenerateText = async () => {
     setIsGeneratingText(true);
     try {
-      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
+      // Use empty string for relative URLs (proxy will handle routing)
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "";
       
       const response = await fetch(`${API_BASE_URL}/api/v1/auto-post/generate`, {
         method: "POST",
@@ -891,17 +893,82 @@ export default function PostSupport() {
     
     // WebSocket接続を確立
     if (!API_BASE_URL) {
-      console.warn('API_BASE_URL is not set. WebSocket connection will not be established.');
-      // フォールバック: ポーリングのみ
-      const interval = setInterval(() => {
-        fetchXAutoPostSchedules();
-      }, 5 * 60 * 1000);
-      return () => clearInterval(interval);
+      // Use current window location for WebSocket when API_BASE_URL is empty
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = window.location.host;
+      const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
+      
+      let ws: WebSocket | null = null;
+      let reconnectTimeout: NodeJS.Timeout | null = null;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
+      
+      const connectWebSocket = () => {
+        try {
+          ws = new WebSocket(wsUrl);
+          
+          ws.onopen = () => {
+            console.log('WebSocket connected for schedule updates');
+            reconnectAttempts = 0;
+          };
+          
+          ws.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'schedule_update' || data.type === 'connected') {
+                console.log('Schedule update received via WebSocket:', data);
+                fetchXAutoPostSchedules();
+              }
+            } catch (error) {
+              console.error('Error parsing WebSocket message:', error);
+            }
+          };
+          
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+          };
+          
+          ws.onclose = () => {
+            console.log('WebSocket disconnected');
+            if (reconnectAttempts < maxReconnectAttempts) {
+              const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 16000);
+              console.log(`Reconnecting WebSocket in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+              reconnectTimeout = setTimeout(() => {
+                reconnectAttempts++;
+                connectWebSocket();
+              }, delay);
+            } else {
+              console.warn('Max WebSocket reconnection attempts reached. Falling back to polling.');
+              const interval = setInterval(() => {
+                fetchXAutoPostSchedules();
+              }, 5 * 60 * 1000);
+              return () => clearInterval(interval);
+            }
+          };
+        } catch (error) {
+          console.error('Failed to create WebSocket:', error);
+          const interval = setInterval(() => {
+            fetchXAutoPostSchedules();
+          }, 5 * 60 * 1000);
+          return () => clearInterval(interval);
+        }
+      };
+      
+      connectWebSocket();
+      
+      return () => {
+        if (ws) {
+          ws.close();
+        }
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+        }
+      };
     }
     
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // API_BASE_URLからプロトコルとパスを除去してホストのみを取得
+    // Use the protocol from API_BASE_URL
     const apiUrl = new URL(API_BASE_URL);
+    const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = apiUrl.host;
     const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
     

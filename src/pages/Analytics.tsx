@@ -60,6 +60,7 @@ import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
 // API Base URL
+// Use empty string for relative URLs (proxy will handle routing)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
 // Types for YouTube Analytics

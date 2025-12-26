@@ -46,7 +46,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// API Base URL
+// API Base URL - empty string uses relative URLs (proxy will handle routing)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
 type ScheduleType =
@@ -396,15 +396,91 @@ export default function Scheduler() {
 
     // WebSocket接続を確立
     if (!API_BASE_URL) {
-      console.warn('API_BASE_URL is not set. Falling back to polling only.');
-      const pollInterval = setInterval(() => {
-        syncGoogleCalendarEvents();
-      }, 30000);
-      return () => clearInterval(pollInterval);
+      // Use current window location for WebSocket when API_BASE_URL is empty
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = window.location.host;
+      const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
+      
+      // Setup WebSocket with window location
+      const setupWebSocketWithLocation = () => {
+        let ws: WebSocket | null = null;
+        let reconnectTimeout: NodeJS.Timeout | null = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        let pollInterval: NodeJS.Timeout | null = null;
+        
+        const connectWebSocket = () => {
+          try {
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+              console.log('WebSocket connected for schedule updates');
+              reconnectAttempts = 0;
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+            };
+            
+            ws.onmessage = (event) => {
+              try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'schedule_update' || data.type === 'connected') {
+                  console.log('Schedule update received via WebSocket:', data);
+                  syncGoogleCalendarEvents();
+                }
+              } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+              }
+            };
+            
+            ws.onerror = (error) => {
+              console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+              console.log('WebSocket disconnected');
+              if (reconnectAttempts < maxReconnectAttempts) {
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 16000);
+                console.log(`Reconnecting WebSocket in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+                reconnectTimeout = setTimeout(() => {
+                  reconnectAttempts++;
+                  connectWebSocket();
+                }, delay);
+              } else {
+                console.warn('Max WebSocket reconnection attempts reached. Falling back to polling.');
+                pollInterval = setInterval(() => {
+                  syncGoogleCalendarEvents();
+                }, 30000);
+              }
+            };
+          } catch (error) {
+            console.error('Failed to create WebSocket:', error);
+          }
+        };
+        
+        connectWebSocket();
+        
+        return () => {
+          if (ws) {
+            ws.close();
+          }
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+          }
+          if (pollInterval) {
+            clearInterval(pollInterval);
+          }
+        };
+      };
+      
+      return setupWebSocketWithLocation();
     }
     
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Use the protocol from API_BASE_URL, not from window.location
+    // This ensures we use ws:// for http backend even if frontend is https
     const apiUrl = new URL(API_BASE_URL);
+    const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = apiUrl.host;
     const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
     
@@ -635,16 +711,83 @@ export default function Scheduler() {
     
     // WebSocket接続を確立
     if (!API_BASE_URL) {
-      console.warn('API_BASE_URL is not set. WebSocket connection will not be established.');
-      // フォールバック: ポーリングのみ
-      const interval = setInterval(() => {
-        fetchImportantEventSchedules();
-      }, 5 * 60 * 1000);
-      return () => clearInterval(interval);
+      // Use current window location for WebSocket when API_BASE_URL is empty
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = window.location.host;
+      const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
+      
+      let ws: WebSocket | null = null;
+      let reconnectTimeout: NodeJS.Timeout | null = null;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
+      
+      const connectWebSocket = () => {
+        try {
+          ws = new WebSocket(wsUrl);
+          
+          ws.onopen = () => {
+            console.log('WebSocket connected for important event schedule updates');
+            reconnectAttempts = 0;
+          };
+          
+          ws.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'schedule_update' || data.type === 'connected') {
+                console.log('Important event schedule update received via WebSocket:', data);
+                fetchImportantEventSchedules();
+              }
+            } catch (error) {
+              console.error('Error parsing WebSocket message:', error);
+            }
+          };
+          
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+          };
+          
+          ws.onclose = () => {
+            console.log('WebSocket disconnected');
+            if (reconnectAttempts < maxReconnectAttempts) {
+              const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 16000);
+              console.log(`Reconnecting WebSocket in ${delay}ms (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+              reconnectTimeout = setTimeout(() => {
+                reconnectAttempts++;
+                connectWebSocket();
+              }, delay);
+            } else {
+              console.warn('Max WebSocket reconnection attempts reached. Falling back to polling.');
+              const interval = setInterval(() => {
+                fetchImportantEventSchedules();
+              }, 5 * 60 * 1000);
+              return () => clearInterval(interval);
+            }
+          };
+        } catch (error) {
+          console.error('Failed to create WebSocket:', error);
+          const interval = setInterval(() => {
+            fetchImportantEventSchedules();
+          }, 5 * 60 * 1000);
+          return () => clearInterval(interval);
+        }
+      };
+      
+      connectWebSocket();
+      
+      return () => {
+        if (ws) {
+          ws.close();
+        }
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+        }
+      };
     }
     
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Use the protocol from API_BASE_URL, not from window.location
+    // This ensures we use ws:// for http backend even if frontend is https
     const apiUrl = new URL(API_BASE_URL);
+    const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = apiUrl.host;
     const wsUrl = `${wsProtocol}//${wsHost}/api/v1/ws/schedule-updates`;
     

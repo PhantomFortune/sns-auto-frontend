@@ -425,6 +425,7 @@ export default function ContentStudio() {
   const [isGeneratingMetadata, setIsGeneratingMetadata] = useState(false);
 
   // API Base URL
+  // Use empty string for relative URLs (proxy will handle routing)
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
   // Shorts台本生成

@@ -23,11 +23,11 @@ export default defineConfig(({ mode }) => ({
 
     proxy: {
       "/api": {
-        // Use backend ngrok URL if provided via environment variable, otherwise use localhost
+        // Use backend URL from environment, defaulting to localhost
         target: process.env.VITE_BACKEND_URL || "http://localhost:8000",
         changeOrigin: true,
-        secure: false, // Allow self-signed certificates (ngrok uses valid certs)
-        ws: true, // Enable websocket proxying if needed
+        secure: false,
+        ws: true, // Enable websocket proxying
       },
     },
   },
@@ -35,6 +35,18 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  // Production build optimizations
+  build: {
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'ui-vendor': ['@radix-ui/react-dialog', '@radix-ui/react-select', '@radix-ui/react-tabs'],
+        },
+      },
     },
   },
   
