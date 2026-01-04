@@ -176,11 +176,11 @@ export default function Scheduler() {
       const now = new Date();
       const timeMin = new Date(now);
       timeMin.setFullYear(now.getFullYear() - 1);
-      timeMin.setHours(0, 0, 0, 0);
+        timeMin.setHours(0, 0, 0, 0);
       
       const timeMax = new Date(now);
       timeMax.setFullYear(now.getFullYear() + 1);
-      timeMax.setHours(23, 59, 59, 999);
+        timeMax.setHours(23, 59, 59, 999);
 
       // Format dates for API (ISO format)
       const timeMinStr = timeMin.toISOString();
@@ -310,7 +310,7 @@ export default function Scheduler() {
         
         // Combine: local schedules + all Google Calendar schedules
         const mergedSchedules = [...updatedLocalSchedules, ...googleCalendarSchedules];
-        
+
         // Remove duplicates by googleCalendarEventId (prefer local version if exists)
         const uniqueSchedules = mergedSchedules.reduce((acc: Schedule[], current: Schedule) => {
           if (current.googleCalendarEventId) {
@@ -326,7 +326,7 @@ export default function Scheduler() {
               } else {
                 // Replace with newer Google Calendar version
                 acc[existingIndex] = current;
-                return acc;
+              return acc;
               }
             }
           }
@@ -384,7 +384,7 @@ export default function Scheduler() {
   useEffect(() => {
     if (isGoogleCalendarConnected) {
       // Initial sync when connected
-      syncGoogleCalendarEvents();
+        syncGoogleCalendarEvents();
     }
   }, [isGoogleCalendarConnected]);
 
@@ -995,7 +995,7 @@ export default function Scheduler() {
             const data = await response.json();
             if (data.success && data.event?.id) {
               googleCalendarEventId = data.event.id;
-              toast.success("Googleカレンダーのイベントを更新しました");
+            toast.success("Googleカレンダーのイベントを更新しました");
             } else {
               throw new Error("無効なレスポンス形式");
             }
@@ -1035,7 +1035,7 @@ export default function Scheduler() {
             const data = await response.json();
             if (data.success && data.event?.id) {
               googleCalendarEventId = data.event.id;
-              toast.success("Googleカレンダーにイベントを作成しました");
+            toast.success("Googleカレンダーにイベントを作成しました");
             } else {
               throw new Error("無効なレスポンス形式");
             }
@@ -1092,8 +1092,8 @@ export default function Scheduler() {
             const data = await response.json();
             if (data.success && data.event?.id) {
               googleCalendarEventId = data.event.id;
-              newSchedule.googleCalendarEventId = googleCalendarEventId;
-              toast.success("Googleカレンダーにイベントを作成しました");
+            newSchedule.googleCalendarEventId = googleCalendarEventId;
+            toast.success("Googleカレンダーにイベントを作成しました");
             } else {
               throw new Error("無効なレスポンス形式");
             }
@@ -1201,7 +1201,7 @@ export default function Scheduler() {
         if (response.ok) {
           const data = await response.json().catch(() => ({}));
           if (data.success !== false) {
-            toast.success("Googleカレンダーからイベントを削除しました");
+          toast.success("Googleカレンダーからイベントを削除しました");
           } else {
             throw new Error(data.detail || "削除に失敗しました");
           }
@@ -1398,7 +1398,7 @@ export default function Scheduler() {
       return; // Prevent multiple simultaneous syncs
     }
     
-    // Check connection status first
+      // Check connection status first
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/google-calendar/status`, {
         method: "GET",

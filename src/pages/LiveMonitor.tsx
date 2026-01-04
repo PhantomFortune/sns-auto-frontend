@@ -1044,10 +1044,10 @@ export default function LiveMonitor() {
             {isLoadingSchedules ? "読み込み中..." : "スケジュール表示"}
           </Button>
 
-          <Badge variant="destructive" className="flex items-center gap-1.5 px-2.5 py-1">
-            <Activity className="h-3.5 w-3.5 animate-pulse" />
-            配信中
-          </Badge>
+        <Badge variant="destructive" className="flex items-center gap-1.5 px-2.5 py-1">
+          <Activity className="h-3.5 w-3.5 animate-pulse" />
+          配信中
+        </Badge>
         </div>
       </div>
 
